@@ -79,6 +79,5 @@ services:
       - app-network
 
 networks:
-  default:
+  app-network:
     driver: bridge
-    name: app-network
