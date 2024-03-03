@@ -1,7 +1,6 @@
 package com.carlosjr.rbe2024q1;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
@@ -15,17 +14,20 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.*;
-
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class Rbe2024q1ApplicationTests {
 
 	@Autowired
 	TestRestTemplate restTemplate;
+
+	@Autowired
+    CrebitoService crebitoService;
 	List<CustomerTransaction> transactions = getTransactions();
 	final String BASE_URL = "/clientes/";
 	@BeforeEach
 	void setUp(){
-		if ( restTemplate == null){
+		if ( restTemplate == null || crebitoService == null){
 				fail("Bean not injected..");
 		}
 	}
@@ -34,9 +36,61 @@ class Rbe2024q1ApplicationTests {
 	void contextLoads() {
 	}
 
+	@Order(3)
+	@RepeatedTest(10)
+	void shouldGetBankStatement(){
+		int id = new Random().nextInt(1,6);
+		String customerUrlGetBankStatement = BASE_URL + id + "/extrato";
+
+		ResponseEntity<BankStatement> getResponse = restTemplate
+				.getForEntity(customerUrlGetBankStatement, BankStatement.class);
+
+		assertThat(getResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+		System.out.println(getResponse.getBody());
+
+
+
+	}
+
+	@Order(2)
+	@Test
+	void shouldTestServiceAmountFlow(){
+		CustomerTransaction spend50000 = CustomerTransaction.builder()
+				.value(50000)
+				.type(TransactionType.c)
+				.description("C lang ")
+				.build();
+
+		crebitoService.doTransaction(1, spend50000);
+
+		var bankStatement = crebitoService.getBankStatement(1);
+
+		assertThat(bankStatement.customerBalance().value())
+				.isEqualTo(-spend50000.value());
+
+		crebitoService.doTransaction(1, spend50000);
+
+		var bankStatementAfterAnotherSpent = crebitoService.getBankStatement(1);
+
+		assertThat(bankStatementAfterAnotherSpent.customerBalance().value())
+				.isEqualTo(-bankStatementAfterAnotherSpent.customerBalance().limit());
+
+
+		CustomerTransaction spendJust1 = CustomerTransaction.builder()
+				.value(1)
+				.type(TransactionType.c)
+				.description("C lang <3")
+				.build();
+
+		assertThatThrownBy(() -> {
+			crebitoService.doTransaction(1, spendJust1);
+		}).isInstanceOf(InsufficientResourceException.class);
+	}
+
+	@Order(1)
 	@Test
 	void shouldCreateTransactionAndHandleInvalidStuff(){
-		int id = new Random().nextInt(1,6);
+		int id = new Random().nextInt(2,6);
 		String customerUrlSaveTransaction = BASE_URL + id + "/transacoes";
 
 		ResponseEntity<CustomerBalanceRetriever> pr1=  restTemplate

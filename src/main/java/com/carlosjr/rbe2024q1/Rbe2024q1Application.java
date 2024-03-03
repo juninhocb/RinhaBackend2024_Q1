@@ -6,8 +6,12 @@ import jakarta.validation.*;
 import jakarta.validation.constraints.*;
 import lombok.Builder;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,10 +26,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
-import java.util.HashSet;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.PatternSyntaxException;
 
@@ -96,13 +97,11 @@ class CrebitoService {
 		findCustomerByIdCompareLimit(id, transaction.value());
 		var balance =  crebitoRepository
 				.getAmountByValue(id, transaction.value());
-		if (balance.isEmpty()){
-			throw new InsufficientResourceException();
-		}
+
 		var newBalance = CustomerBalanceRetriever
 				.builder()
-				.limit(balance.get().limit())
-				.amount(balance.get().value() - transaction.value())
+				.limit(balance.limit())
+				.amount(balance.value() - transaction.value())
 				.build();
 
 		var rowsAffected = crebitoRepository.saveNewTransaction(newBalance.amount(), transaction, id);
@@ -142,14 +141,14 @@ class CrebitoRepository{
 			Customer.builder().id(5).limit(500000).build());
 
 	final String GET_SALDO_IF_CUSTOMER_HAS_LIMIT = "SELECT cliente_id, limite, valor FROM `saldos` " +
-			"WHERE cliente_id = ? AND ? + valor < limite";
+			"WHERE cliente_id = ? AND  ?  + ( valor * -1 ) <= limite";
 
 	final String UPDATE_SALDO_ONLY_VALOR = "UPDATE `saldos` SET valor = ? WHERE cliente_id = ?";
 
 	final String SAVE_NEW_TRANSACAO = "INSERT INTO `transacoes` (cliente_id, valor, tipo, descricao) " +
 			"VALUES ( ? , ? , ? , ? )";
 
-	final String GET_ALL_CUSTOMER_TRANSACTIONS_BY_ID = "SELECT cliente_id, valor, tipo, descricao " +
+	final String GET_ALL_CUSTOMER_TRANSACTIONS_BY_ID = "SELECT cliente_id, valor, tipo, descricao, realizada_em " +
 			"FROM `transacoes` WHERE cliente_id = ? ";
 
 	final JdbcTemplate jdbcTemplate;
@@ -157,10 +156,12 @@ class CrebitoRepository{
 	final CustomerBalanceRowMapper customerBalanceRowMapper;
 	final CustomerTransactionRowMapper customerTransactionRowMapper;
 
-	Optional<CustomerBalance> getAmountByValue(Integer id, Integer value){
+	CustomerBalance getAmountByValue(Integer id, Integer value){
+
 		return Optional
-				.ofNullable(jdbcTemplate
-						.queryForObject(GET_SALDO_IF_CUSTOMER_HAS_LIMIT, customerBalanceRowMapper, id, value));
+						.of(jdbcTemplate
+							.query(GET_SALDO_IF_CUSTOMER_HAS_LIMIT, customerBalanceRowMapper, id, value))
+							.flatMap(list -> list.stream().findFirst()).orElseThrow(InsufficientResourceException::new);
 	}
 
 	int saveNewTransaction(Integer newValue, CustomerTransaction transaction, Integer id){
@@ -177,18 +178,10 @@ class CrebitoRepository{
 	BankStatement getBankStatement(Integer id){
 		var customerBalance = getAmountByValue(id, 0);
 
-		if ( customerBalance.isEmpty()){
-			throw new UnexpectedServerBehaviour();
-		}
-
 		var transactions = jdbcTemplate.query(GET_ALL_CUSTOMER_TRANSACTIONS_BY_ID, customerTransactionRowMapper, id);
 
-		if (transactions.isEmpty()){
-			throw new UnexpectedServerBehaviour();
-		}
-
 		return BankStatement.builder()
-				.customerBalance(customerBalance.get())
+				.customerBalance(customerBalance)
 				.transactions(new HashSet<>(transactions))
 				.build();
 
@@ -299,4 +292,16 @@ class TransactionTypeValidator implements ConstraintValidator<ValidType, Enum<?>
 	Class<?>[] groups() default {};
 	Class<? extends Payload>[] payload() default {};
 	String regexp();
+}
+
+@Configuration
+class AppConfig{
+
+	@Bean
+	ApplicationRunner applicationRunner(){
+		return args -> {
+			TimeZone br = TimeZone.getTimeZone("GMT-03:00");
+			TimeZone.setDefault(br);
+		};
+	}
 }

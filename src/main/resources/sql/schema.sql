@@ -1,3 +1,4 @@
+SET time_zone = '-03:00';
 drop table if exists transacoes;
 create table transacoes(
 
