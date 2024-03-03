@@ -2,6 +2,7 @@ package com.carlosjr.rbe2024q1;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.*;
 import jakarta.validation.constraints.*;
 import lombok.Builder;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.*;
 
+import java.lang.annotation.*;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -24,6 +26,8 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.PatternSyntaxException;
 
 @SpringBootApplication
 public class Rbe2024q1Application {
@@ -41,8 +45,8 @@ class CrebitoController{
 
 	private final CrebitoService crebitoService;
 	@PostMapping("/transacoes")
-	ResponseEntity<CustomerBalance> doTransaction(@PathVariable Integer id,
-												  @RequestBody CustomerTransaction transaction){
+	ResponseEntity<CustomerBalanceRetriever> doTransaction(@PathVariable Integer id,
+														   @RequestBody @Valid CustomerTransaction transaction){
 		return ResponseEntity
 				.ok()
 				.body(crebitoService.doTransaction(id, transaction));
@@ -87,7 +91,7 @@ class UnexpectedServerBehaviour extends RuntimeException{
 class CrebitoService {
 	private final CrebitoRepository crebitoRepository;
 
-	CustomerBalance doTransaction(Integer id, CustomerTransaction transaction){
+	CustomerBalanceRetriever doTransaction(Integer id, CustomerTransaction transaction){
 
 		findCustomerByIdCompareLimit(id, transaction.value());
 		var balance =  crebitoRepository
@@ -95,14 +99,13 @@ class CrebitoService {
 		if (balance.isEmpty()){
 			throw new InsufficientResourceException();
 		}
-		var newBalance = CustomerBalance
+		var newBalance = CustomerBalanceRetriever
 				.builder()
-				.customerId(id)
 				.limit(balance.get().limit())
-				.value(balance.get().value() + transaction.value())
+				.amount(balance.get().value() - transaction.value())
 				.build();
 
-		var rowsAffected = crebitoRepository.saveNewTransaction(newBalance.value(), transaction);
+		var rowsAffected = crebitoRepository.saveNewTransaction(newBalance.amount(), transaction, id);
 
 		if ( rowsAffected < 2){
 			throw new UnexpectedServerBehaviour();
@@ -120,7 +123,7 @@ class CrebitoService {
 		if ( id < 0 || id > 5 ){
 			throw new CustomerNotFoundException();
 		}
-		var c =crebitoRepository.getCustomerById(id);
+		var c = crebitoRepository.getCustomerById(id);
 		if ( value > c.limit()){
 			throw new InsufficientResourceException();
 		}
@@ -160,12 +163,12 @@ class CrebitoRepository{
 						.queryForObject(GET_SALDO_IF_CUSTOMER_HAS_LIMIT, customerBalanceRowMapper, id, value));
 	}
 
-	int saveNewTransaction(Integer newValue, CustomerTransaction transaction){
+	int saveNewTransaction(Integer newValue, CustomerTransaction transaction, Integer id){
 
-		var rowsBalance = jdbcTemplate.update(UPDATE_SALDO_ONLY_VALOR, newValue, transaction.customerId());
+		var rowsBalance = jdbcTemplate.update(UPDATE_SALDO_ONLY_VALOR, newValue, id);
 
-		var rowsTransaction = jdbcTemplate.update(SAVE_NEW_TRANSACAO, transaction.customerId(), transaction.value()
-			,transaction.type() ,transaction.description());
+		var rowsTransaction = jdbcTemplate.update(SAVE_NEW_TRANSACAO, id, transaction.value()
+			,transaction.type().name() ,transaction.description());
 
 		return rowsTransaction + rowsBalance;
 
@@ -205,7 +208,7 @@ class CustomerTransactionRowMapper implements RowMapper<CustomerTransaction>{
 		return CustomerTransaction.builder()
 				.customerId(rs.getInt("cliente_id"))
 				.value(rs.getInt("valor"))
-				.type(TransactionType.toChar(rs.getString("tipo")))
+				.type(TransactionType.fromString(rs.getString("tipo")))
 				.description(rs.getString("descricao"))
 				.timestamp(rs.getTimestamp("realizada_em"))
 				.build();
@@ -227,16 +230,20 @@ class CustomerBalanceRowMapper implements RowMapper<CustomerBalance>{
 }
 
 @Builder
+record CustomerBalanceRetriever(@JsonProperty("limite") Integer limit,
+								@JsonProperty("saldo") Integer amount){}
+
+@Builder
 record CustomerBalance(@JsonIgnore Integer id,
 					   @JsonIgnore Integer customerId,
 					   @JsonProperty("limite") Integer limit,
 					   @JsonProperty("total") Integer value,
 					   @JsonProperty("data_extrato") @Null LocalDateTime timestamp){}
 @Builder
-record CustomerTransaction(@Null @JsonIgnore Integer id,
-						   @JsonIgnore @NotNull Integer customerId,
+record CustomerTransaction(@JsonIgnore Integer id,
+						   @JsonIgnore Integer customerId,
 						   @JsonProperty("valor") @NotNull @Positive Integer value,
-						   @JsonProperty("tipo") @NotNull @Pattern(regexp = "[CD]") TransactionType type,
+						   @JsonProperty("tipo") @NotNull @ValidType(regexp = "[cd]") TransactionType type,
 						   @JsonProperty("descricao") @NotBlank @Size(min = 1, max = 10) String description,
 						   @JsonProperty("realizada_em") @Null Timestamp timestamp){}
 
@@ -247,18 +254,49 @@ record BankStatement(@JsonProperty("saldo") CustomerBalance customerBalance,
 @Builder
 record Customer(Integer id, Integer limit){}
 enum TransactionType{
-	C, D;
+	c, d;
 
-	static TransactionType toChar(String str){
+	static TransactionType fromString(String str){
 		switch (str){
-            case "C" -> {
-                return TransactionType.C;
+            case "c" -> {
+                return TransactionType.c;
             }
-            case "D" -> {
-                return TransactionType.D;
+            case "d" -> {
+                return TransactionType.d;
             }
 		}
 		throw new IllegalArgumentException();
 	}
 }
 
+class TransactionTypeValidator implements ConstraintValidator<ValidType, Enum<?>>{
+	private java.util.regex.Pattern pattern;
+	@Override
+	public void initialize(ValidType constraintAnnotation) {
+		try{
+			pattern = java.util.regex.Pattern.compile(constraintAnnotation.regexp());
+		}catch (PatternSyntaxException pse){
+			throw new UnexpectedServerBehaviour();
+		}
+	}
+
+	@Override
+	public boolean isValid(Enum<?> value, ConstraintValidatorContext context) {
+		if ( value == null){
+			return false;
+		}
+		Matcher m = pattern.matcher(value.name());
+		return m.matches();
+	}
+}
+
+@Documented
+@Constraint(validatedBy = TransactionTypeValidator.class)
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@interface ValidType {
+	String message() default "Invalid type";
+	Class<?>[] groups() default {};
+	Class<? extends Payload>[] payload() default {};
+	String regexp();
+}
