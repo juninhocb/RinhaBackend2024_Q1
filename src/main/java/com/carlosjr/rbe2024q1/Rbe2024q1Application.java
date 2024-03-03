@@ -16,9 +16,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Repository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.lang.annotation.*;
@@ -152,6 +156,7 @@ class CrebitoRepository{
 			"FROM `transacoes` WHERE cliente_id = ? ";
 
 	final JdbcTemplate jdbcTemplate;
+	final TransactionTemplate transactionTemplate;
 
 	final CustomerBalanceRowMapper customerBalanceRowMapper;
 	final CustomerTransactionRowMapper customerTransactionRowMapper;
@@ -164,14 +169,16 @@ class CrebitoRepository{
 							.flatMap(list -> list.stream().findFirst()).orElseThrow(InsufficientResourceException::new);
 	}
 
-	int saveNewTransaction(Integer newValue, CustomerTransaction transaction, Integer id){
+	Integer saveNewTransaction(Integer newValue, CustomerTransaction transaction, Integer id){
 
-		var rowsBalance = jdbcTemplate.update(UPDATE_SALDO_ONLY_VALOR, newValue, id);
+		return transactionTemplate.execute(status -> {
+            var rowsBalance = jdbcTemplate.update(UPDATE_SALDO_ONLY_VALOR, newValue, id);
 
-		var rowsTransaction = jdbcTemplate.update(SAVE_NEW_TRANSACAO, id, transaction.value()
-			,transaction.type().name() ,transaction.description());
+            var rowsTransaction = jdbcTemplate.update(SAVE_NEW_TRANSACAO, id, transaction.value()
+                    ,transaction.type().name() ,transaction.description());
 
-		return rowsTransaction + rowsBalance;
+            return rowsTransaction + rowsBalance;
+        });
 
 	}
 
